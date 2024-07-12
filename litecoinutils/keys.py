@@ -35,7 +35,12 @@ from litecoinutils.constants import (
     SIGHASH_ALL,
 )
 from litecoinutils.setup import get_network
-from litecoinutils.utils import encode_varint
+from litecoinutils.utils import (
+    encode_varint,
+    b_to_h,
+    b_to_i,
+    i_to_b32,
+)
 
 # ECDSA curve using secp256k1 is defined by: y**2 = x**3 + 7
 # This is done modulo p which (secp256k1) is:
@@ -56,14 +61,12 @@ _order = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 # The ECDSA curve (secp256k1) is:
 # Note that we could get that from ecdsa lib, e.g.:
 # SECP256k1.__dict__['curve']
-_curve = ellipticcurve.CurveFp( _p, _a, _b )
+_curve = ellipticcurve.CurveFp(_p, _a, _b)
 
 # The generator base point is:
 # Note that we could get that from ecdsa lib, e.g.:
 # SECP256k1.__dict__['generator']
-_G = ellipticcurve.Point( _curve, _Gx, _Gy, _order )
-
-
+_G = ellipticcurve.Point(_curve, _Gx, _Gy, _order)
 
 
 # method used by both PrivateKey and PublicKey - TODO clean - add in another module?
@@ -72,7 +75,6 @@ def add_magic_prefix(message):
     message_size = encode_varint(len(message))
     message_encoded = message.encode("utf-8")
     return magic_prefix + message_size + message_encoded
-
 
 
 class PrivateKey:
@@ -124,13 +126,11 @@ class PrivateKey:
 
         return self.key.to_string()
 
-
     @classmethod
     def from_wif(cls, wif):
         """Creates key from WIFC or WIF format key"""
 
         return cls(wif=wif)
-
 
     # expects wif in hex string
     def _from_wif(self, wif):
@@ -148,7 +148,7 @@ class PrivateKey:
         wif_utf = wif.encode('utf-8')
 
         # decode base58check get key bytes plus checksum
-        data_bytes = b58decode( wif_utf )
+        data_bytes = b58decode(wif_utf)
         key_bytes = data_bytes[:-4]
         checksum = data_bytes[-4:]
 
@@ -172,7 +172,6 @@ class PrivateKey:
         else:
             self.key = SigningKey.from_string(key_bytes, curve=SECP256k1)
 
-
     def to_wif(self, compressed=True):
         """Returns key in WIFC or WIF string
 
@@ -187,7 +186,7 @@ class PrivateKey:
         # add network prefix to the key
         data = NETWORK_WIF_PREFIXES[get_network()] + self.to_bytes()
 
-        if compressed == True:
+        if compressed is True:
             data += b'\x01'
 
         # double hash and get the first 4 bytes for checksum
@@ -195,10 +194,9 @@ class PrivateKey:
         checksum = data_hash[0:4]
 
         # suffix the key bytes with the checksum and encode to base58check
-        wif = b58encode( data + checksum )
+        wif = b58encode(data + checksum)
 
         return wif.decode('utf-8')
-
 
     def sign_message(self, message, compressed=True):
         """Signs the message with the private key (deterministically)
@@ -225,11 +223,11 @@ class PrivateKey:
         message_magic = add_magic_prefix(message)
 
         # create message digest -- note double hashing
-        message_digest = hashlib.sha256( hashlib.sha256(message_magic).digest() ).digest()
+        message_digest = hashlib.sha256(hashlib.sha256(message_magic).digest()).digest()
 
         #
         # sign non-deterministically - no reason
-        #signature = self.key.sign_digest(message_digest,
+        # signature = self.key.sign_digest(message_digest,
         #                                 sigencode=sigencode_string)
 
         # deterministic signing
@@ -243,13 +241,12 @@ class PrivateKey:
         address = self.get_public_key().get_address(compressed=compressed).to_string()
         for i in range(prefix, prefix + 4):
             recid = chr(i).encode('utf-8')
-            sig = b64encode( recid + signature ).decode('utf-8')
+            sig = b64encode(recid + signature).decode('utf-8')
             try:
                 if PublicKey.verify_message(address, sig, message):
                     return sig
-            except:
+            except Exception:
                 continue
-
 
     def sign_input(self, tx, txin_index, script, sighash=SIGHASH_ALL):
         # the tx knows how to calculate the digest for the corresponding
@@ -257,15 +254,13 @@ class PrivateKey:
         tx_digest = tx.get_transaction_digest(txin_index, script, sighash)
         return self._sign_input(tx_digest, sighash)
 
-
     def sign_segwit_input(self, tx, txin_index, script, amount, sighash=SIGHASH_ALL):
         # the tx knows how to calculate the digest for the corresponding
         # sighash)
         tx_digest = tx.get_transaction_segwit_digest(txin_index, script, amount, sighash)
         return self._sign_input(tx_digest, sighash)
 
-
-    def _sign_input(self, tx_digest, sighash=SIGHASH_ALL):
+    def _sign_input(self, tx_digest: bytes, sighash: int = SIGHASH_ALL) -> str:
         """Signs a transaction input with the private key
 
         Bitcoin uses the normal DER format for transactions. Each input is
@@ -277,16 +272,43 @@ class PrivateKey:
         Returns a signature for that input
         """
 
-        # note that deterministic signing is used
-        signature = self.key.sign_digest_deterministic(tx_digest,
-                                                       sigencode=sigencode_der,
-                                                       hashfunc=hashlib.sha256)
-
-        # make sure that signature complies with Low S standardness rule of
-        # BIP62: https://github.com/litecoin/bips/blob/master/bip-0062.mediawiki
-        #
         # Both R ans S cannot start with 0x00 (be signed as negative) unless
         # they are higher than 2^128 or start with 0x80.
+        #
+        # From Bitcoin core v0.17 a Low R value is required. This way
+        # signatures are always 71 bytes. Because R is not mutable in the same
+        # way that S is, a low R value can only be found by trying different
+        # nonces (RFC6979 - deterministic nonce generation).
+        #
+        # https://bitcoin.stackexchange.com/questions/88702/why-is-a-librarys-
+        # signature-of-a-segwit-tx-different-from-bitcoin-core-signatur
+        #
+        # For this reason we test if we get a Low R value (should be <0x80 and
+        # thus not have the 0x00 prefix that specifies a negative signed
+        # number) we need to change the entropy by using extra_entropy and re-sign
+        # until we get a Low R value.
+
+        # sign - note that deterministic signing is used
+        signature = self.key.sign_digest_deterministic(
+            tx_digest, sigencode=sigencode_der, hashfunc=hashlib.sha256
+        )
+
+        # if high R re-sign until we get a low R value
+        # if high R then its size will be 33 bytes to include the sign
+        attempt = 1
+        length_r = signature[3]
+        while length_r == 33:
+            signature = self.key.sign_digest_deterministic(
+                tx_digest,
+                extra_entropy=i_to_b32(attempt),
+                sigencode=sigencode_der,
+                hashfunc=hashlib.sha256,
+            )
+            attempt += 1
+            length_r = signature[3]
+
+        # make sure that signature complies with Low S standardness rule of
+        # BIP62: https://github.com/bitcoin/bips/blob/master/bip-0062.mediawiki
         #
         # The S part of the signature is equivalent to (order-S). This allows
         # for txid malleability attacks where S is modified with (order-S) and
@@ -310,31 +332,19 @@ class PrivateKey:
         length_total = signature[1]
         der_type_int = signature[2]
         length_r = signature[3]
-        R = signature[4:4+length_r]
+        R = signature[4 : 4 + length_r]
         length_s = signature[5 + length_r]
-        S = signature[5 + length_r + 1:]
-        S_as_bigint = int( hexlify(S).decode('utf-8'), 16 )
+        S = signature[5 + length_r + 1 :]
+        S_as_bigint = b_to_i(S)
 
-        # update R, S if necessary -- in Bitcoin DER signatures' R should have a
-        # prefix of 0x00 only if it starts with 0x80 or higher -- this was
-        # implemented in Bitcoin Core of v0.17 to always be the case (however,
-        # signatures are still valid even without a Low R value. Because R is
-        # not mutable in the same way that S is, a low R value can only be
-        # found by trying different nonves (RFC6979 - deterministic nonce
-        # generation).
-        # TODO to be 100% compliant with Bitcoin Core (still valid without it)
+        # update S -- Low S standardness rule
 
-        # update S if necessary -- Low S standardness rule
-        half_order = _order // 2
-        # if S is larger than half the order then substructed from order and
-        # use that as S since it is equivalent.
-        if S_as_bigint > half_order:
-            # make sure length is 33 bytes (it should be)
-            assert length_s == 0x21
-
+        # if length is 33 bytes then it contains a sign and thus is high S
+        if length_s == 33:
             new_S_as_bigint = _order - S_as_bigint
             # convert bigint to bytes
-            new_S = unhexlify( format(new_S_as_bigint, 'x').zfill(64) )
+            # new_S = h_to_b(i_to_h64(new_S_as_bigint))
+            new_S = i_to_b32(new_S_as_bigint)
             # new value should be 32 bytes
             assert len(new_S) == 0x20
             # reduce appropriate lengths
@@ -344,22 +354,25 @@ class PrivateKey:
             new_S = S
 
         # reconstruct signature
-        signature = struct.pack('BBBB', der_prefix, length_total, der_type_int, length_r) + R + \
-                        struct.pack('BB', der_type_int, length_s) + new_S
+        signature = (
+            struct.pack("BBBB", der_prefix, length_total, der_type_int, length_r)
+            + R
+            + struct.pack("BB", der_type_int, length_s)
+            + new_S
+        )
 
         # add sighash in the signature -- as one byte!
-        signature += struct.pack('B', sighash)
+        signature += struct.pack("B", sighash)
 
         # note that this is the final sig that needs to be added in the
         # script_sig (i.e. the DER signature plus the sighash)
-        return hexlify(signature).decode('utf-8')
-
+        return b_to_h(signature)
 
     def get_public_key(self):
         """Returns the corresponding PublicKey"""
 
         verifying_key = hexlify(self.key.get_verifying_key().to_string())
-        return PublicKey( '04' + verifying_key.decode('utf-8') )
+        return PublicKey('04' + verifying_key.decode('utf-8'))
 
 
 class PublicKey:

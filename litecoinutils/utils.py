@@ -9,7 +9,7 @@
 # propagated, or distributed except according to the terms contained in the
 # LICENSE file.
 
-from binascii import hexlify, unhexlify
+from binascii import unhexlify
 
 from litecoinutils.constants import SATOSHIS_PER_BITCOIN
 
@@ -21,24 +21,26 @@ def to_satoshis(num):
 
     # we need to round because of how floats are stored insternally:
     # e.g. 0.29 * 100000000 = 28999999.999999996
-    return int( round(num * SATOSHIS_PER_BITCOIN) )
+    return int(round(num * SATOSHIS_PER_BITCOIN))
+
 
 def encode_varint(i):
     '''
-    Encode a potentially very large integer into varint bytes. The length should be
-    specified in little-endian.
+    Encode a potentially very large integer into varint bytes.
+    The length should be specified in little-endian.
     https://bitcoin.org/en/developer-reference#compactsize-unsigned-integers
     '''
     if i < 253:
         return bytes([i])
     elif i < 0x10000:
-        return b'\xfd' +  i.to_bytes(2, 'little')
+        return b'\xfd' + i.to_bytes(2, 'little')
     elif i < 0x100000000:
-        return b'\xfe' +  i.to_bytes(4, 'little')
+        return b'\xfe' + i.to_bytes(4, 'little')
     elif i < 0x10000000000000000:
-        return b'\xff' +  i.to_bytes(8, 'little')
+        return b'\xff' + i.to_bytes(8, 'little')
     else:
         raise ValueError("Integer is too large: %d" % i)
+
 
 def prepend_compact_size(data):
     '''
@@ -70,12 +72,10 @@ def is_address_bech32(address):
     Returns if an address (string) is bech32 or not
     TODO improve by checking if valid, etc.
     '''
-    if (address.startswith('ltc') or
-        address.startswith('tltc')):
+    if (address.startswith('ltc') or address.startswith('tltc')):
         return True
 
     return False
-
 
 
 def vi_to_int(byteint):
@@ -93,12 +93,12 @@ def vi_to_int(byteint):
         size = 4
     else:  # integer of 8 bytes
         size = 8
-    return int.from_bytes(byteint[1:1+size][::-1], 'big'), size + 1
+    return int.from_bytes(byteint[1:1 + size][::-1], 'big'), size + 1
 
 
 def to_bytes(string, unhexlify=True):
     '''
-	Converts a hex string to bytes
+    Converts a hex string to bytes
     '''
     if not string:
         return b''
@@ -116,3 +116,48 @@ def to_bytes(string, unhexlify=True):
         return bytes(string, 'utf8')
 
 
+#
+# Basic conversions between bytes (b), hexadecimal (h) and integer (i)
+# Some were trivial but included for consistency.
+#
+def b_to_h(b: bytes) -> str:
+    """Converts bytes to hexadecimal string"""
+    return b.hex()
+
+
+def h_to_b(h: str) -> bytes:
+    """Converts bytes to hexadecimal string"""
+    return bytes.fromhex(h)
+
+
+def h_to_i(hex_str: str) -> int:
+    """Converts a string hexadecimal to a number"""
+    return int(hex_str, base=16)
+
+
+def i_to_h64(i: int) -> str:
+    """Converts an int to a string hexadecimal (padded to 64 hex chars)"""
+    return f"{i:064x}"
+
+
+# def i_to_h(i: int) -> str:
+#    """Converts an int to a string hexadecimal (no padding)"""
+#    return f"{i:x}"
+
+
+# to convert hashes to ints we need byteorder BIG...
+def b_to_i(b: bytes) -> int:
+    """Converts a bytes to a number"""
+    return int.from_bytes(b, byteorder="big")
+
+
+def i_to_b32(i: int) -> bytes:
+    """Converts a integer to bytes"""
+    return i.to_bytes(32, byteorder="big")
+
+
+def i_to_b(i: int) -> bytes:
+    """Converts a integer to bytes"""
+    # determine the number of bytes required to represent the integer
+    byte_length = (i.bit_length() + 7) // 8
+    return i.to_bytes(byte_length, "big")
